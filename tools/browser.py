@@ -7,7 +7,7 @@ load_dotenv()
 
 class WebBrowser:
     def __init__(self):
-        self.api_key = os.getenv("SERPER_API_KEY")
+        self.api_key = st.secrets.get("SERPER_API_KEY") or os.getenv("SERPER_API_KEY")
         self.url = "https://google.serper.dev/search"
 
     def search(self, query):

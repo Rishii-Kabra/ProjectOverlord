@@ -4,6 +4,7 @@ from typing import List, Literal, Optional
 from google import genai
 from dotenv import load_dotenv
 from google.genai import types
+import streamlit as st
 import time
 
 load_dotenv()
@@ -17,7 +18,12 @@ class AgentAction(BaseModel):
 
 class ProjectOrchestrator:
     def __init__(self):
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+        if not api_key:
+            raise ValueError("No GEMINI_API_KEY found. Check Streamlit Secrets or .env file.")
+
+        self.client = genai.Client(api_key=api_key)
         self.model_id = "gemini-2.5-flash" # High speed for iterative tasks
         self.system_prompt = (
             "You are Overlord, an autonomous engineer. "
