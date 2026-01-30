@@ -1,4 +1,10 @@
+import sys
+import os
 import streamlit as st
+
+# Force Python to see the local 'core' and 'tools' folders
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from core.orchestrator import ProjectOrchestrator
 from core.memory import TaskMemory
 from core.validator import CodeValidator
@@ -83,18 +89,13 @@ if prompt := st.chat_input("What is your command, Architect?"):
                 # ... (rest of your tool handling logic: SEARCH_WEB, WRITE_FILE, etc.) ...
 
             except Exception as e:
-                if "QUOTA_LIMIT_REACHED" in str(e):
-                    # Show the warning in the UI
-                    status_placeholder.warning("⚠️ API Quota Hit! Pausing for 30s...")
-
-                    # Cool progress bar for the user
+                if "QUOTA_LIMIT_REACHED" in str(e) or "429" in str(e):
+                    st.warning("⚠️ API Quota reached (20 req limit). Pausing for 60s to reset...")
                     progress_bar = st.progress(0)
-                    for i in range(30):
+                    for i in range(60):  # Increased to 60 for the free tier
                         time.sleep(1)
-                        progress_bar.progress((i + 1) / 30)
+                        progress_bar.progress((i + 1) / 60)
                     progress_bar.empty()
-
-                    # Decrement step so this failed attempt doesn't count towards the 5-step limit
                     step -= 1
                     continue
                 else:
