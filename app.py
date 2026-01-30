@@ -1,68 +1,62 @@
 import sys
 import os
 import streamlit as st
+import time
 
 # Force Python to see the local 'core' and 'tools' folders
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.orchestrator import ProjectOrchestrator
-from core.memory import TaskMemory
 from core.validator import CodeValidator
 from tools.file_manager import FileManager
 from tools.shell import ShellTool
 from tools.browser import WebBrowser
-import time
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Project Overlord", page_icon="🤖", layout="wide")
 st.title("🤖 Project Overlord: Autonomous Agent")
 st.markdown("---")
 
-
 # --- INITIALIZE CORE ---
-# We use @st.cache_resource so it doesn't reload everything on every click
 @st.cache_resource
 def init_system():
     return {
         "orchestrator": ProjectOrchestrator(),
-        "memory": TaskMemory(),
         "files": FileManager(),
         "shell": ShellTool(),
         "browser": WebBrowser(),
         "validator": CodeValidator()
     }
 
-
 sys = init_system()
 
-# --- SIDEBAR (Memory Management) ---
-with st.sidebar:
-    st.header("Memory Control")
-    if st.button("Clear Long-Term Memory"):
-        sys["memory"].clear_memory()
-        st.success("Memory Wiped!")
-
-    st.header("Workspace Files")
-    # Show files currently in the workspace
-    files = [f for f in sys["files"].list_files()]  # You might need to add list_files to FileManager
-    st.write(files)
-
-# --- CHAT INTERFACE ---
+# --- PRIVATE SESSION MEMORY ---
+# This replaces TaskMemory for the web interface to ensure privacy
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display history from the database on load
-for event in sys["memory"].get_history():
-    with st.chat_message(event["role"]):
-        st.markdown(event["parts"][0]["text"])
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("Session Control")
+    if st.button("Clear Current Chat"):
+        st.session_state.messages = []
+        st.rerun()
 
-# User Input
+    st.header("Workspace Files")
+    files = [f for f in sys["files"].list_files()]
+    st.write(files)
+
+# --- DISPLAY CHAT HISTORY ---
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# --- USER INPUT ---
 if prompt := st.chat_input("What is your command, Architect?"):
+    # 1. Save and display user prompt
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-
-    sys["memory"].add_event("user", prompt)
 
     # --- AGENT LOOP ---
     with st.chat_message("assistant"):
@@ -75,24 +69,52 @@ if prompt := st.chat_input("What is your command, Architect?"):
             status_placeholder.info(f"Step {step}: Thinking...")
 
             try:
-                # 1. Get history and call orchestrator
-                history = sys["memory"].get_history()
-                action = sys["orchestrator"].get_next_action(history)
+                # Use st.session_state.messages instead of sys["memory"]
+                # We format it to match what the Gemini SDK expects
+                history_for_api = []
+                for m in st.session_state.messages:
+                    role = "model" if m["role"] == "assistant" else "user"
+                    history_for_api.append({"role": role, "parts": [{"text": m["content"]}]})
+
+                action = sys["orchestrator"].get_next_action(history_for_api)
 
                 if not action:
-                    st.error("The AI failed to generate a plan. Try a different prompt.")
+                    st.error("The AI failed to generate a plan.")
                     break
 
-                # 2. Add the thought to the UI
                 thought_placeholder.write(f"**Step {step} Thought:** {action.thought}")
 
-                # ... (rest of your tool handling logic: SEARCH_WEB, WRITE_FILE, etc.) ...
+                # Handle Tools
+                result = ""
+                if action.tool == "SEARCH_WEB":
+                    status_placeholder.info(f"Searching for: {action.content}...")
+                    result = sys["browser"].search(action.content)
+                elif action.tool == "WRITE_FILE":
+                    status_placeholder.warning("Validating code...")
+                    check = sys["validator"].validate_code(action.content)
+                    if "UNSAFE" in check.upper():
+                        result = f"Security Blocked: {check}"
+                    else:
+                        result = sys["files"].write_file(action.file_name, action.content)
+                elif action.tool == "RUN_CODE":
+                    status_placeholder.info(f"Running {action.file_name}...")
+                    result = sys["shell"].execute_python(action.file_name)
+                elif action.tool == "FINAL_ANSWER":
+                    status_placeholder.empty()
+                    st.success(action.content)
+                    st.session_state.messages.append({"role": "assistant", "content": action.content})
+                    break
+
+                # Record the tool interaction in the private session history
+                tool_memory = f"Thought: {action.thought}\nTool: {action.tool}\nResult: {result}"
+                st.session_state.messages.append({"role": "assistant", "content": tool_memory})
+                st.write(f"**Tool Output:** `{result}`")
 
             except Exception as e:
                 if "QUOTA_LIMIT_REACHED" in str(e) or "429" in str(e):
-                    st.warning("⚠️ API Quota reached (20 req limit). Pausing for 60s to reset...")
+                    status_placeholder.warning("⚠️ API Quota reached. Pausing for 60s...")
                     progress_bar = st.progress(0)
-                    for i in range(60):  # Increased to 60 for the free tier
+                    for i in range(60):
                         time.sleep(1)
                         progress_bar.progress((i + 1) / 60)
                     progress_bar.empty()
@@ -101,33 +123,3 @@ if prompt := st.chat_input("What is your command, Architect?"):
                 else:
                     st.error(f"Critical System Error: {e}")
                     break
-
-            if not action:
-                st.error("AI failed to respond.")
-                break
-
-            thought_placeholder.write(f"**Thought:** {action.thought}")
-
-            # Handle Tools
-            result = ""
-            if action.tool == "SEARCH_WEB":
-                status_placeholder.info(f"Searching for: {action.content}...")
-                result = sys["browser"].search(action.content)
-            elif action.tool == "WRITE_FILE":
-                status_placeholder.warning("Validating code...")
-                check = sys["validator"].validate_code(action.content)
-                if "UNSAFE" in check.upper():
-                    result = f"Security Blocked: {check}"
-                else:
-                    result = sys["files"].write_file(action.file_name, action.content)
-            elif action.tool == "RUN_CODE":
-                status_placeholder.info(f"Running {action.file_name}...")
-                result = sys["shell"].execute_python(action.file_name)
-            elif action.tool == "FINAL_ANSWER":
-                st.success(action.content)
-                sys["memory"].add_event("model", action.content)
-                break
-
-            # Update memory and UI with tool result
-            sys["memory"].add_event("model", f"Thought: {action.thought}\nTool: {action.tool}\nResult: {result}")
-            st.write(f"**Tool Output:** `{result}`")
